@@ -29,9 +29,8 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Version is taken from the "packageManager" field in package.json.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Set up Node
         uses: actions/setup-node@v4
