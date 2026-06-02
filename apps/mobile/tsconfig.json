@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-native",
+    "lib": ["ES2022", "DOM"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "rootDir": ".",
+    "noEmit": true,
+    "allowJs": true,
+    "types": ["jest", "react", "react-native"],
+    "paths": {
+      "@voice2spec/shared-types": ["../../packages/shared-types/src"],
+      "@voice2spec/shared-types/*": ["../../packages/shared-types/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "App.tsx", "e2e/**/*.ts"],
+  "exclude": ["node_modules", "**/*.test.tsx", "**/*.test.ts"]
+}

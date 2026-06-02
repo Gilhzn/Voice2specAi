@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "types": ["node", "jest"],
+    "paths": {
+      "@voice2spec/shared-types": ["../../packages/shared-types/src"],
+      "@voice2spec/shared-types/*": ["../../packages/shared-types/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["dist", "node_modules", "**/*.test.ts"]
+}

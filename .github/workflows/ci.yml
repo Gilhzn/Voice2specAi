@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Shared types must be built first so downstream typechecks resolve dist/.
+      - name: Build shared-types
+        run: pnpm --filter @voice2spec/shared-types build
+
+      - name: Lint
+        run: pnpm -r lint
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      # Backend unit + integration tests run with mock/in-memory fallbacks,
+      # so no API keys or datastores are required in CI.
+      - name: Test (server, with coverage)
+        run: pnpm --filter server test:cov
+
+      - name: Test (mobile)
+        run: pnpm --filter mobile test
+
+      - name: Build (server)
+        run: pnpm --filter server build

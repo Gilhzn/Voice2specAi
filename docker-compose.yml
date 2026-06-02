@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: voice2spec-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: voice2spec
+      POSTGRES_PASSWORD: voice2spec
+      POSTGRES_DB: voice2spec
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./apps/server/src/models/dbSchema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U voice2spec']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: voice2spec-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
