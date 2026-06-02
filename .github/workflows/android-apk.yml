@@ -1,0 +1,91 @@
+name: Android Release APK
+
+# Builds a standalone, signed release APK on GitHub-hosted runners (which have
+# the Android SDK/NDK and access to Google's Maven repos) and publishes it as a
+# downloadable GitHub Release asset.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/voice2spec-ai-app-zNxrB
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/shared-types/**'
+      - '.github/workflows/android-apk.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # shared-types must be compiled to dist/ before Metro bundles the JS.
+      - name: Build shared-types
+        run: pnpm --filter @voice2spec/shared-types build
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install required SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
+
+      - name: Build signed release APK
+        working-directory: apps/mobile/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,x86_64
+
+      - name: Stage APK
+        run: |
+          mkdir -p dist-apk
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk \
+             dist-apk/Voice2Spec-AI-release.apk
+          ls -la dist-apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voice2Spec-AI-release-apk
+          path: dist-apk/Voice2Spec-AI-release.apk
+          if-no-files-found: error
+
+      - name: Publish APK to a GitHub Release
+        if: github.ref == 'refs/heads/claude/voice2spec-ai-app-zNxrB'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Voice2Spec AI — Android APK
+          body: |
+            Standalone signed release APK for Voice2Spec AI.
+
+            - Built from `${{ github.sha }}`
+            - Install on an Android device (allow “install from unknown sources”).
+            - Signed with the repo's demo keystore — for testing/distribution,
+              not a Play Store production key.
+          files: dist-apk/Voice2Spec-AI-release.apk
+          make_latest: true

@@ -35,6 +35,7 @@ apps/mobile/android/build/
 apps/mobile/.expo/
 *.keystore
 !debug.keystore
+!voice2spec-release.keystore
 
 # Detox artifacts
 artifacts/

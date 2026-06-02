@@ -96,19 +96,43 @@ pnpm --filter mobile test         # component / store / theme units
 Coverage focuses on the correctness-critical modules: language detection,
 PII masking, encryption and the context filter.
 
-## Mobile app — finishing native setup
+## Download the Android APK
 
-The mobile **JavaScript/TypeScript is complete and typechecks**, but the native
-`ios/` and `android/` projects are not generated here (they require the React
-Native CLI and platform SDKs/simulators). To run on a device/simulator:
+A standalone, **signed release APK** is built by GitHub Actions
+(`.github/workflows/android-apk.yml`) on the GitHub-hosted runners (which carry
+the Android SDK/NDK) and published as a downloadable Release asset:
+
+- **Releases → “Voice2Spec AI — Android APK”** → `Voice2Spec-AI-release.apk`
+  (tag `android-latest`).
+- Also available as a workflow **artifact** on each run.
+
+Install on an Android device with “install from unknown sources” enabled. The
+APK bundles the JS, so it runs standalone without a Metro dev server. It is
+signed with the repository's **demo keystore** (`apps/mobile/android/app/
+voice2spec-release.keystore`) — fine for testing/distribution, but replace it
+with your own private keystore for a real Play Store release.
+
+> Note: the APK can only be compiled on a host with access to Google's Maven
+> repositories (`dl.google.com` / `maven.google.com`) — hence the CI build.
+
+## Mobile app — native project
+
+The native **`android/`** project is included and configured for this pnpm
+monorepo (gradle paths point at the root `node_modules`, package
+`com.voice2spec.app`, `RECORD_AUDIO` permission, release signing). Build it
+locally with the Android toolchain installed:
 
 ```bash
-cd apps/mobile
-npx @react-native-community/cli init Voice2Spec --directory . --skip-install
 pnpm install
-# wire the native audio module behind src/services/audioCapture.ts
-pnpm ios   # or: pnpm android
+pnpm --filter @voice2spec/shared-types build
+cd apps/mobile/android && ./gradlew assembleRelease
+# APK: app/build/outputs/apk/release/app-release.apk
 ```
+
+The `ios/` project is not generated (requires macOS/Xcode); run
+`npx @react-native-community/cli init` style prebuild on a Mac to add it. The
+native audio module behind `src/services/audioCapture.ts` is currently a stub —
+wire a real recorder (AVAudioEngine / AudioRecord) for live microphone capture.
 
 End-to-end tests are authored with **Detox** (`apps/mobile/e2e/`,
 `.detoxrc.js`) and run once a native build + simulator are available.
