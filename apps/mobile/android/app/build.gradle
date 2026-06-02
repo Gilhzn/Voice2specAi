@@ -13,6 +13,10 @@ react {
     reactNativeDir = file("../../../../node_modules/react-native")
     codegenDir = file("../../../../node_modules/@react-native/codegen")
     cliFile = file("../../../../node_modules/react-native/cli.js")
+    // node_modules is hoisted to the repo root, so the Hermes compiler isn't
+    // under `root`. Point hermesCommand at the root copy (%OS-BIN% is replaced
+    // by the plugin with the platform-specific folder, e.g. linux64-bin).
+    hermesCommand = file("../../../../node_modules/react-native/sdks/hermesc/%OS-BIN%/hermesc").toString()
 }
 
 /**
