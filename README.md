@@ -137,23 +137,40 @@ wire a real recorder (AVAudioEngine / AudioRecord) for live microphone capture.
 End-to-end tests are authored with **Detox** (`apps/mobile/e2e/`,
 `.detoxrc.js`) and run once a native build + simulator are available.
 
-## Real microphone → Whisper STT → Claude
+## Real-time AI: live mic → streaming STT → Claude
 
-When a **Server URL** is configured in the app's Settings, the recorder captures
-real microphone audio (`react-native-audio-recorder-player`) and, on stop,
-uploads the file to the server's `POST /transcribe` endpoint. The server runs
-**OpenAI Whisper** over the recording (per-utterance segments), masks PII,
-detects language, **translates each segment** (OpenAI), filters noise, and
-generates the spec with **Anthropic Claude**. Run the server with keys:
+When a **Server URL** is set in the app's Settings, recordings run through the
+real backend:
+
+1. The app captures **real microphone PCM** (`@fugood/react-native-audio-pcm-stream`)
+   and streams it over a **WebSocket** to the server.
+2. The server proxies the audio to **Deepgram's streaming API** for true
+   word-by-word transcription (the Deepgram key never leaves the server),
+   surfacing interim + final transcripts live.
+3. Each final utterance is PII-masked, language-detected, **translated**
+   (OpenAI), and noise-filtered.
+4. On stop, **Anthropic Claude** generates the 8-section spec.
+
+Run the server with keys (any subset — missing ones fall back to mocks):
 
 ```bash
-OPENAI_API_KEY=sk-...  ANTHROPIC_API_KEY=sk-ant-...  pnpm --filter server dev
+DEEPGRAM_API_KEY=...  ANTHROPIC_API_KEY=sk-ant-...  OPENAI_API_KEY=sk-...  pnpm --filter server dev
 ```
 
-Without keys the server transparently uses deterministic mocks; with no server
-configured the app falls back to the fully on-device demo. (True word-by-word
-live streaming isn't possible with Whisper, which is not a streaming model — the
-model is record → transcribe, but the transcription is real.)
+With **no server configured**, the app runs the fully self-contained on-device
+demo — so the APK works with zero setup.
+
+## Deploy the server (Render, one click)
+
+The repo includes `render.yaml` + `apps/server/Dockerfile`. In Render: **New +
+→ Blueprint**, connect this repo, and set `DEEPGRAM_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` in the dashboard. Render builds the image
+and gives you a public HTTPS URL — paste it into the app's **Settings → Server
+URL** and you have real-time AI end to end. (The service boots with in-memory
+storage so it works immediately; add managed Postgres/Redis for persistence.)
+
+Locally with Docker: `docker build -f apps/server/Dockerfile -t voice2spec .`
+then `docker run -p 4000:4000 -e DEEPGRAM_API_KEY=... -e ANTHROPIC_API_KEY=... voice2spec`.
 
 ## UX design tokens
 

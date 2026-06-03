@@ -1,0 +1,32 @@
+# One-click Render deployment for the Voice2Spec server.
+# In the Render dashboard: New + → Blueprint → connect this repo. Render reads
+# this file, builds the Docker image, and deploys a public HTTPS web service.
+# Set the three secret keys (marked sync:false) in the dashboard; the rest are
+# provided here. The service boots with in-memory storage (no managed DB needed)
+# so it just works — add Postgres/Redis later for persistence.
+services:
+  - type: web
+    name: voice2spec-server
+    runtime: docker
+    repo: https://github.com/Gilhzn/Voice2specAi
+    branch: claude/voice2spec-ai-app-zNxrB
+    dockerfilePath: ./apps/server/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Real live STT (streaming). Without it the server uses a mock.
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      # Real spec generation. Without it the server uses a mock.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Real translation (and file-upload Whisper STT). Optional.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: DEEPGRAM_LANGUAGE
+        value: multi
+      # Per-user row encryption key; generated once and kept by Render.
+      - key: MASTER_ENCRYPTION_KEY
+        generateValue: true

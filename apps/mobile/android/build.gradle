@@ -19,3 +19,22 @@ buildscript {
 }
 
 apply plugin: "com.facebook.react.rootproject"
+
+// AGP 8 requires every Android module to declare a `namespace`. Some older
+// React Native native modules (e.g. the PCM audio stream) still rely on the
+// deprecated `package` attribute in their AndroidManifest. Inject a namespace
+// for any such module so the project builds on AGP 8.
+subprojects { subproject ->
+    afterEvaluate {
+        def androidExt = subproject.extensions.findByName("android")
+        if (androidExt != null && androidExt.namespace == null) {
+            def manifestFile = subproject.file("src/main/AndroidManifest.xml")
+            if (manifestFile.exists()) {
+                def pkg = new groovy.xml.XmlSlurper().parse(manifestFile).@package.text()
+                if (pkg != null && !pkg.isEmpty()) {
+                    androidExt.namespace = pkg
+                }
+            }
+        }
+    }
+}

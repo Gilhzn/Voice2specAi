@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ServerMessage, WsMessageType } from '@voice2spec/shared-types';
 import { useAppStore } from '../store/useAppStore';
 import { ApiClient } from '../services/api';
 import { generateDemoSpec, startDemoTranscript, DemoHandle } from '../services/demoEngine';
-import { RecorderHandle, requestMicPermission, startRecording } from '../services/audioRecorder';
+import { PcmHandle, requestMicPermission, startPcmStream } from '../services/pcmRecorder';
 
 const USER_ID = 'demo-user';
 
@@ -10,14 +11,14 @@ type Mode = 'demo' | 'live';
 
 /**
  * Unified recorder.
- *  - Live mode (a server URL is configured): records real microphone audio,
- *    uploads it on stop for Whisper transcription + Claude spec generation.
- *  - Demo mode (no server / unreachable): streams an on-device canned transcript
- *    and generates the spec locally.
- * The screen just calls start()/stop() and reads `amplitude`.
+ *  - Live mode (a server URL is configured): streams real microphone PCM over a
+ *    WebSocket to the server, which proxies to Deepgram for live word-by-word
+ *    transcription, then Claude generates the spec on stop.
+ *  - Demo mode (no server / unreachable / permission denied): streams an
+ *    on-device canned transcript and generates the spec locally.
  */
 export function useRecorder(onSpecReady: () => void) {
-  const { startRecording: storeStart, stopRecording, upsertSegment, setSpec, setSpecProgress } =
+  const { startRecording: storeStart, stopRecording, upsertSegment, setTranslation, setSpec, setSpecProgress } =
     useAppStore();
 
   const [amplitude, setAmplitude] = useState(0);
@@ -25,14 +26,23 @@ export function useRecorder(onSpecReady: () => void) {
 
   const modeRef = useRef<Mode | null>(null);
   const demoRef = useRef<DemoHandle | null>(null);
-  const recRef = useRef<RecorderHandle | null>(null);
-  const apiRef = useRef<ApiClient | null>(null);
+  const pcmRef = useRef<PcmHandle | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const seqRef = useRef(0);
 
   const teardown = useCallback(() => {
     demoRef.current?.stop();
     demoRef.current = null;
-    recRef.current?.stop().catch(() => undefined);
-    recRef.current = null;
+    pcmRef.current?.stop();
+    pcmRef.current = null;
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch {
+        /* ignore */
+      }
+      wsRef.current = null;
+    }
     setAmplitude(0);
   }, []);
 
@@ -45,29 +55,83 @@ export function useRecorder(onSpecReady: () => void) {
     demoRef.current = startDemoTranscript({ onSegment: upsertSegment, onAmplitude: setAmplitude });
   }, [storeStart, upsertSegment]);
 
+  const onMessage = useCallback(
+    (msg: ServerMessage) => {
+      switch (msg.type) {
+        case WsMessageType.TranscriptPartial:
+        case WsMessageType.TranscriptFinal:
+          upsertSegment(msg.segment);
+          break;
+        case WsMessageType.Translation:
+          setTranslation(msg.segmentId, msg.translation);
+          break;
+        case WsMessageType.SpecProgress:
+          setSpecProgress(msg.progress);
+          break;
+        case WsMessageType.SpecComplete:
+          setSpec(msg.spec);
+          teardown();
+          onSpecReady();
+          break;
+        default:
+          break;
+      }
+    },
+    [upsertSegment, setTranslation, setSpecProgress, setSpec, teardown, onSpecReady],
+  );
+
   const startLive = useCallback(
     async (serverUrl: string) => {
       const api = new ApiClient(serverUrl);
       const { zeroRetention } = useAppStore.getState().settings;
       try {
         const { session } = await api.createSession({ userId: USER_ID, zeroRetention });
-        const ok = await requestMicPermission();
-        if (!ok) {
-          // No mic permission — fall back to the on-device demo.
+        const granted = await requestMicPermission();
+        if (!granted) {
           startDemo();
           return;
         }
-        apiRef.current = api;
+
         modeRef.current = 'live';
         setConnection('live');
         storeStart(session.id);
-        recRef.current = await startRecording(setAmplitude);
+        seqRef.current = 0;
+
+        const ws = new WebSocket(api.wsUrl(session.id, USER_ID));
+        wsRef.current = ws;
+        ws.onmessage = (e) => {
+          try {
+            onMessage(JSON.parse(String(e.data)) as ServerMessage);
+          } catch {
+            /* ignore malformed frame */
+          }
+        };
+        ws.onopen = () => {
+          ws.send(
+            JSON.stringify({ type: WsMessageType.StartSession, sessionId: session.id, sampleRate: 16000 }),
+          );
+          pcmRef.current = startPcmStream((base64) => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  type: WsMessageType.AudioChunk,
+                  sessionId: session.id,
+                  seq: seqRef.current++,
+                  data: base64,
+                }),
+              );
+              // Lightweight reactive pulse for the waveform.
+              setAmplitude(0.35 + Math.random() * 0.6);
+            }
+          });
+        };
+        ws.onerror = () => undefined;
       } catch {
-        // Server unreachable or recorder failed — degrade to the demo.
+        // Server unreachable — degrade gracefully to the on-device demo.
         startDemo();
       }
     },
-    [startDemo, storeStart],
+    [onMessage, startDemo, storeStart],
   );
 
   const start = useCallback(() => {
@@ -76,41 +140,42 @@ export function useRecorder(onSpecReady: () => void) {
     else startDemo();
   }, [startDemo, startLive]);
 
-  const finishWithLocalSpec = useCallback(() => {
-    const segs = useAppStore.getState().segments;
-    const sessionId = useAppStore.getState().sessionId ?? `local-${Date.now()}`;
-    setSpec(generateDemoSpec(sessionId, segs));
-    onSpecReady();
-  }, [onSpecReady, setSpec]);
-
-  const stop = useCallback(async () => {
+  const stop = useCallback(() => {
     const mode = modeRef.current;
     setSpecProgress(0.1);
     stopRecording();
 
-    if (mode === 'live' && recRef.current && apiRef.current) {
-      const api = apiRef.current;
-      const sessionId = useAppStore.getState().sessionId ?? '';
-      try {
-        const uri = await recRef.current.stop();
-        recRef.current = null;
-        setAmplitude(0);
-        setSpecProgress(0.4);
-        const result = await api.transcribe(sessionId, USER_ID, uri);
-        result.segments.forEach(upsertSegment);
-        setSpec(result.spec);
-        onSpecReady();
-      } catch {
-        // Transcription failed — still produce a local spec so the user isn't stuck.
-        finishWithLocalSpec();
+    if (mode === 'live' && wsRef.current) {
+      pcmRef.current?.stop();
+      pcmRef.current = null;
+      setAmplitude(0);
+      const sessionId = useAppStore.getState().sessionId;
+      if (wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({ type: WsMessageType.StopSession, sessionId, generateSpec: true }),
+        );
       }
+      // Safety net: if the server never returns a spec, synthesize one locally.
+      setTimeout(() => {
+        if (useAppStore.getState().spec === null) {
+          const segs = useAppStore.getState().segments;
+          setSpec(generateDemoSpec(sessionId ?? `local-${Date.now()}`, segs));
+          teardown();
+          onSpecReady();
+        }
+      }, 15000);
       return;
     }
 
     // Demo mode: brief progress beat, then generate locally.
     teardown();
-    setTimeout(finishWithLocalSpec, 600);
-  }, [finishWithLocalSpec, onSpecReady, setSpec, setSpecProgress, stopRecording, teardown, upsertSegment]);
+    setTimeout(() => {
+      const segs = useAppStore.getState().segments;
+      const sessionId = useAppStore.getState().sessionId ?? `local-${Date.now()}`;
+      setSpec(generateDemoSpec(sessionId, segs));
+      onSpecReady();
+    }, 600);
+  }, [onSpecReady, setSpec, setSpecProgress, stopRecording, teardown]);
 
   return { amplitude, connection, start, stop };
 }

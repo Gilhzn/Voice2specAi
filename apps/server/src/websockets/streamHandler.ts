@@ -1,38 +1,52 @@
+import { randomUUID } from 'node:crypto';
 import { FastifyInstance } from 'fastify';
 import {
   ClientMessage,
   RecordingState,
+  SegmentCategory,
   ServerMessage,
+  TranscriptSegment,
   WsMessageType,
 } from '@voice2spec/shared-types';
-import { processAudioChunk } from '../services/pipeline';
+import { createLiveStt, LiveSttSession, LiveTranscript } from '../services/deepgramService';
+import { buildSegment } from '../services/segmentBuilder';
+import { detectLanguage } from '../services/languageService';
 import { getSessionStore } from '../services/redisService';
 import { getRepository } from '../models/db';
 import { generateSpecForSession } from '../services/specGenerator';
 
-/** Type of a raw WebSocket connection's send-capable socket. */
 interface Sendable {
   send(data: string): void;
 }
 
-/** Serialize and push a server message to the client. */
 function send(socket: Sendable, msg: ServerMessage): void {
   socket.send(JSON.stringify(msg));
 }
 
+/** Per-connection live transcription state. */
+interface LiveState {
+  stt: LiveSttSession;
+  userId: string;
+  sessionId: string;
+  segIndex: number;
+  currentUtteranceId: string | null;
+  pending: Promise<void>[];
+}
+
+const liveSessions = new Map<string, LiveState>();
+
 /**
- * Registers the `/ws` audio-streaming endpoint. The protocol is the
- * discriminated union defined in @voice2spec/shared-types. Each connection is
- * bound to a session (and its owning user) via query parameters.
- *
- * Exported separately as {@link handleClientMessage} so the integration tests
- * can exercise the full pipeline without a live socket.
+ * Registers the `/ws` audio-streaming endpoint. Clients send raw PCM
+ * (linear16, 16kHz mono) audio chunks; the server proxies them to a live STT
+ * session (Deepgram when configured, else a deterministic mock) and streams
+ * interim/final transcripts + translations back, then generates the spec with
+ * Claude on stop.
  */
 export async function streamHandler(app: FastifyInstance): Promise<void> {
   app.get('/ws', { websocket: true }, (connection, req) => {
-    // @fastify/websocket v10 passes the raw ws WebSocket as the first argument.
     const ws = connection as unknown as {
       on(event: 'message', cb: (raw: Buffer) => void): void;
+      on(event: 'close', cb: () => void): void;
       send(data: string): void;
     };
     const query = req.query as { sessionId?: string; userId?: string };
@@ -44,22 +58,40 @@ export async function streamHandler(app: FastifyInstance): Promise<void> {
       try {
         msg = JSON.parse(raw.toString()) as ClientMessage;
       } catch {
-        send(socket, {
-          type: WsMessageType.Error,
-          code: 'BAD_JSON',
-          message: 'Could not parse message',
-        });
+        send(socket, { type: WsMessageType.Error, code: 'BAD_JSON', message: 'Could not parse message' });
         return;
       }
       void handleClientMessage(msg, userId, socket);
     });
+
+    ws.on('close', () => {
+      // Best-effort cleanup if the client disconnects mid-session.
+      for (const [id, state] of liveSessions) {
+        if (state.userId === userId) {
+          void state.stt.finish();
+          liveSessions.delete(id);
+        }
+      }
+    });
   });
 }
 
+/** Build a lightweight interim segment (no translation/filtering yet). */
+function interimSegment(id: string, text: string): TranscriptSegment {
+  return {
+    id,
+    lang: detectLanguage(text),
+    text,
+    translation: '',
+    isFiltered: false,
+    category: SegmentCategory.Engineering,
+    ts: Date.now(),
+    confidence: 0.4,
+  };
+}
+
 /**
- * Core message handler — pure of any socket framework so it is unit/integration
- * testable. Returns once any async side effects (transcription, persistence,
- * spec generation) and outbound messages have been dispatched.
+ * Core message handler — framework-agnostic so it is unit/integration testable.
  */
 export async function handleClientMessage(
   msg: ClientMessage,
@@ -72,12 +104,36 @@ export async function handleClientMessage(
   switch (msg.type) {
     case WsMessageType.StartSession: {
       await repo.updateSessionState(msg.sessionId, RecordingState.Recording);
+
+      const state: LiveState = {
+        stt: undefined as unknown as LiveSttSession,
+        userId,
+        sessionId: msg.sessionId,
+        segIndex: 0,
+        currentUtteranceId: null,
+        pending: [],
+      };
+
+      const onTranscript = (t: LiveTranscript) => {
+        state.pending.push(processTranscript(t, state, socket, store, repo));
+      };
+      state.stt = await createLiveStt({
+        onTranscript,
+        onError: (err) =>
+          send(socket, {
+            type: WsMessageType.Error,
+            sessionId: msg.sessionId,
+            code: 'STT_ERROR',
+            message: String((err as Error)?.message ?? err),
+          }),
+      });
+
+      liveSessions.set(msg.sessionId, state);
       send(socket, { type: WsMessageType.SessionStarted, sessionId: msg.sessionId });
       return;
     }
 
     case WsMessageType.AudioChunk: {
-      // Detect packet loss / reordering by tracking the max sequence seen.
       const maxSeq = await store.getMaxSeq(msg.sessionId);
       if (msg.seq > maxSeq + 1 && maxSeq >= 0) {
         send(socket, {
@@ -89,25 +145,26 @@ export async function handleClientMessage(
       }
       await store.recordSeq(msg.sessionId, msg.seq);
 
-      const audio = Buffer.from(msg.data, 'base64');
-      const segment = await processAudioChunk(audio, msg.seq);
-
-      // Stream the partial immediately, then the final + translation.
-      send(socket, { type: WsMessageType.TranscriptPartial, sessionId: msg.sessionId, segment });
-      await store.appendSegment(msg.sessionId, segment);
-      await repo.saveSegment(userId, msg.sessionId, msg.seq, segment);
-      send(socket, { type: WsMessageType.TranscriptFinal, sessionId: msg.sessionId, segment });
-      send(socket, {
-        type: WsMessageType.Translation,
-        sessionId: msg.sessionId,
-        segmentId: segment.id,
-        translation: segment.translation,
-      });
+      const state = liveSessions.get(msg.sessionId);
+      if (state) {
+        state.stt.sendAudio(Buffer.from(msg.data, 'base64'));
+        // Deterministic for the mock path (which emits during sendAudio); a no-op
+        // for real streaming, where transcripts arrive asynchronously via events.
+        const pending = state.pending.splice(0);
+        if (pending.length) await Promise.all(pending);
+      }
       return;
     }
 
     case WsMessageType.StopSession: {
+      const state = liveSessions.get(msg.sessionId);
+      if (state) {
+        await state.stt.finish();
+        if (state.pending.length) await Promise.all(state.pending.splice(0));
+        liveSessions.delete(msg.sessionId);
+      }
       await repo.updateSessionState(msg.sessionId, RecordingState.Generating);
+
       if (!msg.generateSpec) {
         await repo.updateSessionState(msg.sessionId, RecordingState.Idle);
         return;
@@ -115,7 +172,7 @@ export async function handleClientMessage(
       send(socket, {
         type: WsMessageType.SpecProgress,
         sessionId: msg.sessionId,
-        progress: 0.1,
+        progress: 0.15,
         stage: 'filtering transcript',
       });
       const spec = await generateSpecForSession(userId, msg.sessionId);
@@ -131,11 +188,48 @@ export async function handleClientMessage(
     }
 
     default: {
-      send(socket, {
-        type: WsMessageType.Error,
-        code: 'UNKNOWN_TYPE',
-        message: `Unhandled message type`,
-      });
+      send(socket, { type: WsMessageType.Error, code: 'UNKNOWN_TYPE', message: 'Unhandled message type' });
     }
   }
+}
+
+/** Handle one transcript event: interim → partial; final → persisted segment. */
+async function processTranscript(
+  t: LiveTranscript,
+  state: LiveState,
+  socket: Sendable,
+  store: Awaited<ReturnType<typeof getSessionStore>>,
+  repo: Awaited<ReturnType<typeof getRepository>>,
+): Promise<void> {
+  if (!t.isFinal) {
+    if (!state.currentUtteranceId) state.currentUtteranceId = randomUUID();
+    send(socket, {
+      type: WsMessageType.TranscriptPartial,
+      sessionId: state.sessionId,
+      segment: interimSegment(state.currentUtteranceId, t.text),
+    });
+    return;
+  }
+
+  const id = state.currentUtteranceId ?? randomUUID();
+  state.currentUtteranceId = null;
+
+  const segment = await buildSegment(t.text);
+  segment.id = id; // keep the interim id so the client updates in place
+
+  await store.appendSegment(state.sessionId, segment);
+  await repo.saveSegment(state.userId, state.sessionId, state.segIndex++, segment);
+
+  send(socket, { type: WsMessageType.TranscriptFinal, sessionId: state.sessionId, segment });
+  send(socket, {
+    type: WsMessageType.Translation,
+    sessionId: state.sessionId,
+    segmentId: segment.id,
+    translation: segment.translation,
+  });
+}
+
+/** Test helper: drop any lingering live sessions between test cases. */
+export function __resetLiveSessionsForTests(): void {
+  liveSessions.clear();
 }
