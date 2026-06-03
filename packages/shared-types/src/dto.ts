@@ -71,6 +71,13 @@ export interface GenerateSpecResponse {
   spec: SpecDocument;
 }
 
+/** Response from uploading a recorded audio file for transcription + spec. */
+export interface TranscribeResponse {
+  session: SessionMeta;
+  segments: TranscriptSegment[];
+  spec: SpecDocument;
+}
+
 export interface HealthResponse {
   status: 'ok';
   uptime: number;

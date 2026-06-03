@@ -137,6 +137,24 @@ wire a real recorder (AVAudioEngine / AudioRecord) for live microphone capture.
 End-to-end tests are authored with **Detox** (`apps/mobile/e2e/`,
 `.detoxrc.js`) and run once a native build + simulator are available.
 
+## Real microphone → Whisper STT → Claude
+
+When a **Server URL** is configured in the app's Settings, the recorder captures
+real microphone audio (`react-native-audio-recorder-player`) and, on stop,
+uploads the file to the server's `POST /transcribe` endpoint. The server runs
+**OpenAI Whisper** over the recording (per-utterance segments), masks PII,
+detects language, **translates each segment** (OpenAI), filters noise, and
+generates the spec with **Anthropic Claude**. Run the server with keys:
+
+```bash
+OPENAI_API_KEY=sk-...  ANTHROPIC_API_KEY=sk-ant-...  pnpm --filter server dev
+```
+
+Without keys the server transparently uses deterministic mocks; with no server
+configured the app falls back to the fully on-device demo. (True word-by-word
+live streaming isn't possible with Whisper, which is not a streaming model — the
+model is record → transcribe, but the transcription is real.)
+
 ## UX design tokens
 
 True Black `#000000` background · Electric Teal `#00F5D4` accent ·

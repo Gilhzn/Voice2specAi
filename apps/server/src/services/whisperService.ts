@@ -1,6 +1,7 @@
 import { Language } from '@voice2spec/shared-types';
 import { env } from '../config/env';
 import { detectLanguage } from './languageService';
+import { getOpenAI } from './openaiClient';
 
 /** Result of transcribing one audio chunk. */
 export interface SttResult {
@@ -10,15 +11,23 @@ export interface SttResult {
   isFinal: boolean;
 }
 
+/** Result of transcribing a whole recorded file. */
+export interface FileTranscription {
+  segments: { text: string }[];
+  language?: string;
+}
+
 export interface WhisperService {
   readonly mode: 'live' | 'mock';
-  /** Transcribe a single audio chunk (raw bytes). */
+  /** Transcribe a single streamed audio chunk (raw bytes). */
   transcribeChunk(audio: Buffer, seq: number): Promise<SttResult>;
+  /** Transcribe a complete recorded audio file into utterance segments. */
+  transcribeFile(audio: Buffer, filename: string): Promise<FileTranscription>;
 }
 
 /**
  * Deterministic mock used when no OpenAI key is present. It returns a rotating
- * set of canned bilingual utterances so the live pipeline (transcript ->
+ * set of canned bilingual utterances so the full pipeline (transcript ->
  * translation -> filtering -> spec) can be exercised fully offline.
  */
 const MOCK_UTTERANCES: string[] = [
@@ -37,47 +46,43 @@ class MockWhisperService implements WhisperService {
 
   async transcribeChunk(_audio: Buffer, seq: number): Promise<SttResult> {
     const text = MOCK_UTTERANCES[seq % MOCK_UTTERANCES.length];
-    return {
-      text,
-      lang: detectLanguage(text),
-      confidence: 0.95,
-      isFinal: true,
-    };
+    return { text, lang: detectLanguage(text), confidence: 0.95, isFinal: true };
+  }
+
+  async transcribeFile(_audio: Buffer, _filename: string): Promise<FileTranscription> {
+    return { segments: MOCK_UTTERANCES.map((text) => ({ text })), language: 'mixed' };
   }
 }
 
 class LiveWhisperService implements WhisperService {
   readonly mode = 'live' as const;
-  // The OpenAI client is created lazily to avoid importing the SDK in mock mode.
-  private clientPromise?: Promise<unknown>;
-
-  private async client() {
-    if (!this.clientPromise) {
-      this.clientPromise = import('openai').then(
-        ({ default: OpenAI }) => new OpenAI({ apiKey: env.OPENAI_API_KEY }),
-      );
-    }
-    return this.clientPromise;
-  }
 
   async transcribeChunk(audio: Buffer, _seq: number): Promise<SttResult> {
-    const openai = (await this.client()) as {
-      audio: {
-        transcriptions: {
-          create: (args: Record<string, unknown>) => Promise<{ text: string }>;
-        };
-      };
-    };
-    // Wrap raw bytes as a File-like object accepted by the SDK.
-    const file = new File([new Uint8Array(audio)], `chunk.webm`, { type: 'audio/webm' });
+    const openai = await getOpenAI();
+    const file = new File([new Uint8Array(audio)], 'chunk.wav', { type: 'audio/wav' });
     const res = await openai.audio.transcriptions.create({
       file,
       model: env.WHISPER_MODEL,
-      // Whisper auto-detects he/en; omit `language` to allow code-switching.
       response_format: 'json',
     });
     const text = res.text ?? '';
     return { text, lang: detectLanguage(text), confidence: 0.9, isFinal: true };
+  }
+
+  async transcribeFile(audio: Buffer, filename: string): Promise<FileTranscription> {
+    const openai = await getOpenAI();
+    const file = new File([new Uint8Array(audio)], filename, { type: 'audio/mp4' });
+    const res = await openai.audio.transcriptions.create({
+      file,
+      model: env.WHISPER_MODEL,
+      // Verbose JSON yields per-utterance segments for a live-style transcript.
+      response_format: 'verbose_json',
+    });
+    const segments =
+      res.segments && res.segments.length > 0
+        ? res.segments.map((s) => ({ text: s.text.trim() })).filter((s) => s.text.length > 0)
+        : [{ text: (res.text ?? '').trim() }].filter((s) => s.text.length > 0);
+    return { segments, language: res.language };
   }
 }
 

@@ -4,6 +4,7 @@ import {
   GenerateSpecResponse,
   GetTranscriptResponse,
   HealthResponse,
+  TranscribeResponse,
 } from '@voice2spec/shared-types';
 
 /**
@@ -48,6 +49,23 @@ export class ApiClient {
 
   async generateSpec(sessionId: string): Promise<GenerateSpecResponse> {
     return this.post('/spec', { sessionId });
+  }
+
+  /** Upload a recorded audio file for Whisper transcription + Claude spec. */
+  async transcribe(sessionId: string, userId: string, fileUri: string): Promise<TranscribeResponse> {
+    const form = new FormData();
+    form.append('sessionId', sessionId);
+    form.append('userId', userId);
+    // React Native's fetch streams the file from its URI without reading it
+    // into JS memory when given this { uri, name, type } shape.
+    form.append('audio', {
+      uri: fileUri,
+      name: 'audio.mp4',
+      type: 'audio/mp4',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    const res = await fetch(`${this.baseUrl}/transcribe`, { method: 'POST', body: form });
+    return this.handle<TranscribeResponse>(res);
   }
 
   private async get<T>(path: string): Promise<T> {
