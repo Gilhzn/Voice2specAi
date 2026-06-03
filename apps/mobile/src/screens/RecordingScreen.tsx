@@ -1,100 +1,66 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { ServerMessage, WsMessageType } from '@voice2spec/shared-types';
 import { RootStackParamList } from '../navigation/types';
 import { colors, spacing, typography } from '../theme/designTokens';
 import { RecordButton } from '../components/RecordButton';
 import { Waveform } from '../components/Waveform';
 import { TranscriptView } from '../components/TranscriptView';
 import { useAppStore } from '../store/useAppStore';
-import { useWebSocket } from '../hooks/useWebSocket';
-import { useAudioStream } from '../hooks/useAudioStream';
-import { api } from '../services/api';
+import { DemoHandle, generateDemoSpec, startDemoTranscript } from '../services/demoEngine';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Recording'>;
 
-const USER_ID = 'demo-user';
-
 /**
- * Primary screen: the one-tap recorder. Owns the WebSocket + audio stream and
- * renders the live waveform and bilingual transcript. On stop it triggers spec
- * generation and navigates to the Spec screen when the document arrives.
+ * Primary screen: the one-tap recorder. The downloadable APK runs without a
+ * backend, so it drives an on-device demo engine — Start streams a live
+ * bilingual transcript, Stop generates the specification locally and navigates
+ * to the Spec screen. (The server-backed WebSocket path lives in the hooks/api
+ * services for when a backend is configured.)
  */
 export function RecordingScreen({ navigation }: Props): React.JSX.Element {
   const {
     recordingState,
-    sessionId,
     segments,
-    settings,
     startRecording,
     stopRecording,
     upsertSegment,
-    setTranslation,
     setSpec,
     setSpecProgress,
   } = useAppStore();
 
-  const onMessage = useCallback(
-    (msg: ServerMessage) => {
-      switch (msg.type) {
-        case WsMessageType.TranscriptPartial:
-        case WsMessageType.TranscriptFinal:
-          upsertSegment(msg.segment);
-          break;
-        case WsMessageType.Translation:
-          setTranslation(msg.segmentId, msg.translation);
-          break;
-        case WsMessageType.SpecProgress:
-          setSpecProgress(msg.progress);
-          break;
-        case WsMessageType.SpecComplete:
-          setSpec(msg.spec);
-          navigation.navigate('Spec');
-          break;
-        default:
-          break;
-      }
-    },
-    [upsertSegment, setTranslation, setSpecProgress, setSpec, navigation],
-  );
+  const [amplitude, setAmplitude] = useState(0);
+  const demoRef = useRef<DemoHandle | null>(null);
 
-  const wsUrl = sessionId ? api.wsUrl(sessionId, USER_ID) : null;
-  const { send } = useWebSocket({ url: wsUrl, onMessage });
+  // Clean up timers if the screen unmounts mid-recording.
+  useEffect(() => () => demoRef.current?.stop(), []);
 
-  const { amplitude, start: startCapture, stop: stopCapture } = useAudioStream({
-    sessionId,
-    sendChunk: (seq, data) =>
-      sessionId && send({ type: WsMessageType.AudioChunk, sessionId, seq, data }),
-  });
-
-  const handlePress = useCallback(async () => {
+  const handlePress = useCallback(() => {
     if (recordingState === 'idle') {
-      const { session } = await api.createSession({
-        userId: USER_ID,
-        zeroRetention: settings.zeroRetention,
+      const sessionId = `local-${Date.now()}`;
+      startRecording(sessionId);
+      demoRef.current = startDemoTranscript({
+        onSegment: upsertSegment,
+        onAmplitude: setAmplitude,
       });
-      startRecording(session.id);
-      send({ type: WsMessageType.StartSession, sessionId: session.id, sampleRate: 16000 });
-      await startCapture();
     } else if (recordingState === 'recording') {
-      await stopCapture();
+      demoRef.current?.stop();
+      demoRef.current = null;
+      setAmplitude(0);
       stopRecording();
-      if (sessionId) {
-        send({ type: WsMessageType.StopSession, sessionId, generateSpec: true });
-      }
+
+      // Generate the spec from the captured segments, with a brief progress beat.
+      setSpecProgress(0.1);
+      const current = useAppStore.getState().segments;
+      const sessionId = useAppStore.getState().sessionId ?? `local-${Date.now()}`;
+      setTimeout(() => {
+        const spec = generateDemoSpec(sessionId, current);
+        setSpec(spec);
+        navigation.navigate('Spec');
+      }, 600);
     }
-  }, [
-    recordingState,
-    settings.zeroRetention,
-    sessionId,
-    startRecording,
-    stopRecording,
-    send,
-    startCapture,
-    stopCapture,
-  ]);
+  }, [recordingState, startRecording, stopRecording, upsertSegment, setSpec, setSpecProgress, navigation]);
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
