@@ -1,75 +1,88 @@
-import React, { useEffect, useState } from 'react';
+import React, { useRef } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { TranscriptSegment } from '@voice2spec/shared-types';
-import { colors, fontFamilyForLanguage, motion, spacing, typography } from '../theme/designTokens';
-import { TranslationLine } from './TranslationLine';
+import { colors, radii, spacing, typography } from '../theme/designTokens';
+import { SegmentCard } from './SegmentCard';
 
 interface TranscriptViewProps {
   segments: TranscriptSegment[];
+  /** Whether a recording session is active (affects the empty state copy). */
+  recording: boolean;
 }
 
-/** Scrolling live transcript with a soft typewriter reveal on the newest line. */
-export function TranscriptView({ segments }: TranscriptViewProps): React.JSX.Element {
+/** Scrolling live transcript of segment cards, with a premium empty state. */
+export function TranscriptView({ segments, recording }: TranscriptViewProps): React.JSX.Element {
+  const scrollRef = useRef<ScrollView>(null);
+
+  if (segments.length === 0) {
+    return <EmptyState recording={recording} />;
+  }
+
   return (
-    <ScrollView style={styles.scroll} contentContainerStyle={styles.content} testID="transcript">
+    <ScrollView
+      ref={scrollRef}
+      style={styles.scroll}
+      contentContainerStyle={styles.content}
+      testID="transcript"
+      showsVerticalScrollIndicator={false}
+      onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+    >
       {segments.map((seg, i) => (
-        <SegmentRow key={seg.id} segment={seg} isLatest={i === segments.length - 1} />
+        <SegmentCard key={seg.id} segment={seg} isLatest={i === segments.length - 1} />
       ))}
     </ScrollView>
   );
 }
 
-function SegmentRow({
-  segment,
-  isLatest,
-}: {
-  segment: TranscriptSegment;
-  isLatest: boolean;
-}): React.JSX.Element {
-  const text = useTypewriter(segment.text, isLatest);
+function EmptyState({ recording }: { recording: boolean }): React.JSX.Element {
   return (
-    <View style={[styles.row, segment.isFiltered && styles.filteredRow]}>
-      <Text
-        style={[
-          styles.text,
-          { fontFamily: fontFamilyForLanguage(segment.lang) },
-          segment.isFiltered && styles.filteredText,
-        ]}
-      >
-        {text}
+    <View style={styles.empty} testID="transcript-empty">
+      <View style={styles.emptyMark}>
+        <View style={styles.emptyMarkInner} />
+      </View>
+      <Text style={styles.emptyTitle}>
+        {recording ? 'Listening…' : 'Capture your brainstorm'}
       </Text>
-      {!segment.isFiltered && <TranslationLine text={segment.translation} lang={segment.lang} />}
+      <Text style={styles.emptyBody}>
+        {recording
+          ? 'Speak naturally in Hebrew or English — the transcript and translation appear here in real time.'
+          : 'Tap the button below to start. Voice2Spec transcribes your conversation, filters the noise, and turns it into a precise engineering spec.'}
+      </Text>
     </View>
   );
 }
 
-/** Reveals text one character at a time for the soft typewriter effect. */
-export function useTypewriter(full: string, enabled: boolean): string {
-  const [shown, setShown] = useState(enabled ? '' : full);
-
-  useEffect(() => {
-    if (!enabled) {
-      setShown(full);
-      return;
-    }
-    let i = 0;
-    setShown('');
-    const timer = setInterval(() => {
-      i += 1;
-      setShown(full.slice(0, i));
-      if (i >= full.length) clearInterval(timer);
-    }, motion.typewriterCharMs);
-    return () => clearInterval(timer);
-  }, [full, enabled]);
-
-  return shown;
-}
-
 const styles = StyleSheet.create({
   scroll: { flex: 1 },
-  content: { padding: spacing.md, gap: spacing.md },
-  row: { gap: spacing.xs },
-  filteredRow: { opacity: 0.4 },
-  text: { ...typography.body, color: colors.textPrimary },
-  filteredText: { color: colors.textTertiary, textDecorationLine: 'line-through' },
+  content: { padding: spacing.md, gap: spacing.sm, paddingBottom: spacing.lg },
+  empty: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xl,
+    gap: spacing.md,
+  },
+  emptyMark: {
+    width: 72,
+    height: 72,
+    borderRadius: radii.pill,
+    borderWidth: 2,
+    borderColor: colors.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.sm,
+  },
+  emptyMarkInner: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: colors.accent,
+  },
+  emptyTitle: { ...typography.title, color: colors.textPrimary, textAlign: 'center' },
+  emptyBody: {
+    ...typography.body,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 24,
+  },
 });

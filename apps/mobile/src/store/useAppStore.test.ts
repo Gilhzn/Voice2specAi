@@ -70,4 +70,10 @@ describe('useAppStore', () => {
     useAppStore.getState().toggleZeroRetention();
     expect(useAppStore.getState().settings.zeroRetention).toBe(true);
   });
+
+  it('sets and trims the server URL', () => {
+    expect(useAppStore.getState().settings.serverUrl).toBe('');
+    useAppStore.getState().setServerUrl('  http://host:4000  ');
+    expect(useAppStore.getState().settings.serverUrl).toBe('http://host:4000');
+  });
 });

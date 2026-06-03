@@ -18,9 +18,10 @@ interface WaveformProps {
 /**
  * Organic, frequency-reactive waveform. Each bar springs toward a height
  * derived from the live amplitude plus a per-bar phase offset, producing a
- * fluid 60fps motion driven by the audio level.
+ * fluid 60fps motion driven by the audio level. Bars fade toward the edges
+ * for a soft, premium look.
  */
-export function Waveform({ amplitude, active, barCount = 24 }: WaveformProps): React.JSX.Element {
+export function Waveform({ amplitude, active, barCount = 32 }: WaveformProps): React.JSX.Element {
   return (
     <View style={styles.container} testID="waveform">
       {Array.from({ length: barCount }).map((_, i) => (
@@ -41,18 +42,23 @@ function Bar({
   active: boolean;
   barCount: number;
 }): React.JSX.Element {
-  const height = useSharedValue(4);
+  const height = useSharedValue(3);
+  // Bell-shaped envelope: taller in the middle, shorter at the edges.
+  const envelope = Math.sin((index / (barCount - 1)) * Math.PI);
 
   useEffect(() => {
-    // Per-bar phase gives the waveform an organic, non-uniform shape.
-    const phase = Math.sin((index / barCount) * Math.PI);
-    const target = active ? 4 + amplitude * 56 * (0.4 + 0.6 * phase) : 4;
-    height.value = withSpring(target, { damping: 12, stiffness: 180 });
-  }, [amplitude, active, index, barCount, height]);
+    const jitter = 0.5 + 0.5 * Math.sin(index * 1.7 + amplitude * 6);
+    const target = active ? 3 + amplitude * 46 * (0.35 + 0.65 * envelope) * jitter : 3;
+    height.value = withSpring(target, { damping: 14, stiffness: 200, mass: 0.5 });
+  }, [amplitude, active, index, envelope, height]);
 
   const animatedStyle = useAnimatedStyle(() => ({ height: height.value }));
 
-  return <Animated.View style={[styles.bar, animatedStyle]} />;
+  return (
+    <Animated.View
+      style={[styles.bar, { opacity: active ? 0.45 + 0.55 * envelope : 0.25 }, animatedStyle]}
+    />
+  );
 }
 
 const styles = StyleSheet.create({
@@ -60,11 +66,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    height: 72,
-    gap: 4,
+    height: 64,
+    gap: 3,
   },
   bar: {
-    width: 4,
+    width: 3,
     borderRadius: 2,
     backgroundColor: colors.accent,
   },

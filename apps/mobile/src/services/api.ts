@@ -3,6 +3,7 @@ import {
   CreateSessionResponse,
   GenerateSpecResponse,
   GetTranscriptResponse,
+  HealthResponse,
 } from '@voice2spec/shared-types';
 
 /**
@@ -12,12 +13,29 @@ import {
 export const DEFAULT_BASE_URL = 'http://localhost:4000';
 
 export class ApiClient {
-  constructor(private readonly baseUrl: string = DEFAULT_BASE_URL) {}
+  private readonly baseUrl: string;
+
+  constructor(baseUrl: string = DEFAULT_BASE_URL) {
+    // Normalize: trim and drop a trailing slash.
+    this.baseUrl = baseUrl.trim().replace(/\/+$/, '');
+  }
 
   /** Build the WebSocket URL for a given session. */
   wsUrl(sessionId: string, userId: string): string {
     const ws = this.baseUrl.replace(/^http/, 'ws');
     return `${ws}/ws?sessionId=${sessionId}&userId=${encodeURIComponent(userId)}`;
+  }
+
+  /** Probe server health; used by Settings to validate a configured URL. */
+  async health(timeoutMs = 6000): Promise<HealthResponse> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${this.baseUrl}/health`, { signal: controller.signal });
+      return this.handle<HealthResponse>(res);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async createSession(body: CreateSessionRequest): Promise<CreateSessionResponse> {

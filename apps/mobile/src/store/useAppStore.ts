@@ -14,6 +14,8 @@ export interface AppState {
   specProgress: number;
   settings: {
     zeroRetention: boolean;
+    /** Base URL of a running Voice2Spec server; empty = on-device demo mode. */
+    serverUrl: string;
   };
 
   // Actions
@@ -25,6 +27,7 @@ export interface AppState {
   setSpecProgress: (progress: number) => void;
   setSpec: (spec: SpecDocument) => void;
   toggleZeroRetention: () => void;
+  setServerUrl: (url: string) => void;
 }
 
 const initialState = {
@@ -33,7 +36,7 @@ const initialState = {
   segments: [] as TranscriptSegment[],
   spec: null as SpecDocument | null,
   specProgress: 0,
-  settings: { zeroRetention: false },
+  settings: { zeroRetention: false, serverUrl: '' },
 };
 
 export const useAppStore = create<AppState>((set) => ({
@@ -74,4 +77,7 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       settings: { ...state.settings, zeroRetention: !state.settings.zeroRetention },
     })),
+
+  setServerUrl: (url) =>
+    set((state) => ({ settings: { ...state.settings, serverUrl: url.trim() } })),
 }));

@@ -1,85 +1,75 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { RecordingState } from '@voice2spec/shared-types';
 import { RootStackParamList } from '../navigation/types';
 import { colors, spacing, typography } from '../theme/designTokens';
 import { RecordButton } from '../components/RecordButton';
 import { Waveform } from '../components/Waveform';
 import { TranscriptView } from '../components/TranscriptView';
+import { TopBar } from '../components/TopBar';
 import { useAppStore } from '../store/useAppStore';
-import { DemoHandle, generateDemoSpec, startDemoTranscript } from '../services/demoEngine';
+import { useRecorder } from '../hooks/useRecorder';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Recording'>;
 
 /**
- * Primary screen: the one-tap recorder. The downloadable APK runs without a
- * backend, so it drives an on-device demo engine — Start streams a live
- * bilingual transcript, Stop generates the specification locally and navigates
- * to the Spec screen. (The server-backed WebSocket path lives in the hooks/api
- * services for when a backend is configured.)
+ * Primary screen: the one-tap recorder. Uses {@link useRecorder}, which streams
+ * from a configured server (REST + WebSocket) or, when none is set / reachable,
+ * from the on-device demo engine. Renders the live waveform and transcript.
  */
 export function RecordingScreen({ navigation }: Props): React.JSX.Element {
-  const {
-    recordingState,
-    segments,
-    startRecording,
-    stopRecording,
-    upsertSegment,
-    setSpec,
-    setSpecProgress,
-  } = useAppStore();
+  const { recordingState, segments } = useAppStore();
+  const isRecording = recordingState === RecordingState.Recording;
 
-  const [amplitude, setAmplitude] = useState(0);
-  const demoRef = useRef<DemoHandle | null>(null);
+  const onSpecReady = useCallback(() => navigation.navigate('Spec'), [navigation]);
+  const { amplitude, connection, start, stop } = useRecorder(onSpecReady);
 
-  // Clean up timers if the screen unmounts mid-recording.
-  useEffect(() => () => demoRef.current?.stop(), []);
+  const [elapsed, setElapsed] = useState(0);
+  const elapsedTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (isRecording) {
+      setElapsed(0);
+      elapsedTimer.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+    } else if (elapsedTimer.current) {
+      clearInterval(elapsedTimer.current);
+      elapsedTimer.current = null;
+    }
+    return () => {
+      if (elapsedTimer.current) clearInterval(elapsedTimer.current);
+    };
+  }, [isRecording]);
 
   const handlePress = useCallback(() => {
-    if (recordingState === 'idle') {
-      const sessionId = `local-${Date.now()}`;
-      startRecording(sessionId);
-      demoRef.current = startDemoTranscript({
-        onSegment: upsertSegment,
-        onAmplitude: setAmplitude,
-      });
-    } else if (recordingState === 'recording') {
-      demoRef.current?.stop();
-      demoRef.current = null;
-      setAmplitude(0);
-      stopRecording();
-
-      // Generate the spec from the captured segments, with a brief progress beat.
-      setSpecProgress(0.1);
-      const current = useAppStore.getState().segments;
-      const sessionId = useAppStore.getState().sessionId ?? `local-${Date.now()}`;
-      setTimeout(() => {
-        const spec = generateDemoSpec(sessionId, current);
-        setSpec(spec);
-        navigation.navigate('Spec');
-      }, 600);
-    }
-  }, [recordingState, startRecording, stopRecording, upsertSegment, setSpec, setSpecProgress, navigation]);
+    if (recordingState === RecordingState.Idle) start();
+    else if (recordingState === RecordingState.Recording) stop();
+  }, [recordingState, start, stop]);
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
-      <View style={styles.header}>
-        <Text style={styles.subtitle}>
-          {recordingState === 'recording'
-            ? 'Listening — speak Hebrew or English'
-            : 'Tap to capture your brainstorm'}
-        </Text>
-        <Pressable onPress={() => navigation.navigate('Settings')} testID="open-settings">
-          <Text style={styles.settingsLink}>Settings</Text>
-        </Pressable>
-      </View>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <TopBar
+        recording={isRecording}
+        elapsed={elapsed}
+        connection={connection}
+        onSettings={() => navigation.navigate('Settings')}
+      />
 
-      <TranscriptView segments={segments} />
+      <TranscriptView segments={segments} recording={isRecording} />
 
       <View style={styles.footer}>
-        <Waveform amplitude={amplitude} active={recordingState === 'recording'} />
+        <Waveform amplitude={amplitude} active={isRecording} />
         <RecordButton state={recordingState} onPress={handlePress} />
+        <Text style={styles.hint}>
+          {recordingState === RecordingState.Generating
+            ? 'Synthesizing your specification…'
+            : isRecording
+              ? 'Tap to stop and generate the spec'
+              : connection === null
+                ? 'On-device demo · configure a server in Settings'
+                : 'Ready'}
+        </Text>
       </View>
     </SafeAreaView>
   );
@@ -87,14 +77,14 @@ export function RecordingScreen({ navigation }: Props): React.JSX.Element {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  footer: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.lg,
+    gap: spacing.md,
     alignItems: 'center',
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
   },
-  subtitle: { ...typography.caption, color: colors.textSecondary, flex: 1 },
-  settingsLink: { ...typography.caption, color: colors.accent },
-  footer: { padding: spacing.lg, gap: spacing.lg, alignItems: 'center' },
+  hint: { ...typography.caption, color: colors.textTertiary, textAlign: 'center' },
 });
