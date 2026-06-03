@@ -51,6 +51,11 @@ export class ApiClient {
     return this.post('/spec', { sessionId });
   }
 
+  /** Send an already-transcribed conversation for Claude spec generation. */
+  async specFromText(userId: string, texts: string[]): Promise<TranscribeResponse> {
+    return this.post('/spec/from-text', { userId, texts });
+  }
+
   /** Upload a recorded audio file for Whisper transcription + Claude spec. */
   async transcribe(sessionId: string, userId: string, fileUri: string): Promise<TranscribeResponse> {
     const form = new FormData();

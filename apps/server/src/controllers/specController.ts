@@ -1,14 +1,20 @@
+import { randomUUID } from 'node:crypto';
 import { FastifyInstance } from 'fastify';
 import {
   GenerateSpecRequest,
   GenerateSpecResponse,
   HealthResponse,
+  RecordingState,
+  SessionMeta,
+  TranscribeResponse,
 } from '@voice2spec/shared-types';
+import { env } from '../config/env';
 import { getRepository } from '../models/db';
 import { getSessionStore } from '../services/redisService';
 import { getWhisperService } from '../services/whisperService';
 import { getClaudeService } from '../services/claudeService';
 import { generateSpecForSession } from '../services/specGenerator';
+import { buildSegment } from '../services/segmentBuilder';
 
 /** REST routes for spec generation and the service health probe. */
 export async function specController(app: FastifyInstance): Promise<void> {
@@ -27,6 +33,43 @@ export async function specController(app: FastifyInstance): Promise<void> {
     };
     return res;
   });
+
+  // Generate a spec from an already-transcribed conversation (on-device STT).
+  app.post<{ Body: { userId?: string; texts?: string[]; zeroRetention?: boolean } }>(
+    '/spec/from-text',
+    async (req, reply) => {
+      const { userId, texts, zeroRetention } = req.body ?? {};
+      if (!Array.isArray(texts) || texts.length === 0) {
+        return reply
+          .status(400)
+          .send({ error: 'BadRequest', message: 'texts[] is required', statusCode: 400 });
+      }
+      const owner = userId || 'anonymous';
+      const repo = await getRepository();
+      await repo.createUser(owner);
+
+      const now = Date.now();
+      const meta: SessionMeta = {
+        id: randomUUID(),
+        userId: owner,
+        state: RecordingState.Generating,
+        createdAt: now,
+        updatedAt: now,
+        zeroRetention: zeroRetention ?? env.ZERO_RETENTION_DEFAULT,
+        segmentCount: 0,
+      };
+      await repo.createSession(meta);
+
+      const segments = await Promise.all(texts.map((t) => buildSegment(String(t))));
+      for (let i = 0; i < segments.length; i++) {
+        await repo.saveSegment(owner, meta.id, i, segments[i]);
+      }
+      const spec = await generateSpecForSession(owner, meta.id);
+      const session = (await repo.getSession(meta.id)) ?? meta;
+      const res: TranscribeResponse = { session, segments, spec };
+      return reply.send(res);
+    },
+  );
 
   app.post<{ Body: GenerateSpecRequest }>('/spec', async (req, reply) => {
     const { sessionId } = req.body ?? {};

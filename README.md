@@ -137,7 +137,19 @@ wire a real recorder (AVAudioEngine / AudioRecord) for live microphone capture.
 End-to-end tests are authored with **Detox** (`apps/mobile/e2e/`,
 `.detoxrc.js`) and run once a native build + simulator are available.
 
-## Real-time AI: live mic → streaming STT → Claude
+## How transcription works
+
+**By default the app understands your real speech on-device** — using the
+platform speech recognizer (`@react-native-voice/voice`) with **no server and
+no API key**. Speak naturally (pick Hebrew or English in Settings); the live
+transcript is built from your actual words, and the specification is generated
+from them on-device. Tap stop to get the spec.
+
+If a **Server URL** is configured, the captured transcript is additionally sent
+to the server so **Anthropic Claude** produces a deeper specification (and the
+server can also run Deepgram streaming / Whisper — see below).
+
+## Optional: server-side streaming STT → Claude
 
 When a **Server URL** is set in the app's Settings, recordings run through the
 real backend:

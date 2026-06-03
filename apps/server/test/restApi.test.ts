@@ -81,6 +81,29 @@ describe('REST API (integration)', () => {
     expect(body.spec.model).toBe('mock');
   });
 
+  it('generates a spec from a transcript via /spec/from-text', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/spec/from-text',
+      payload: {
+        userId: 'voice-user',
+        texts: [
+          'We should build a React Native app with a Fastify backend',
+          'Use PostgreSQL with encryption and a Redis queue',
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ segments: unknown[]; spec: { sections: string[] } }>();
+    expect(body.segments.length).toBe(2);
+    expect(body.spec.sections.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it('rejects /spec/from-text without texts', async () => {
+    const res = await app.inject({ method: 'POST', url: '/spec/from-text', payload: {} });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('returns 404 generating a spec for an unknown session', async () => {
     const res = await app.inject({
       method: 'POST',

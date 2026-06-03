@@ -1,181 +1,129 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ServerMessage, WsMessageType } from '@voice2spec/shared-types';
 import { useAppStore } from '../store/useAppStore';
 import { ApiClient } from '../services/api';
-import { generateDemoSpec, startDemoTranscript, DemoHandle } from '../services/demoEngine';
-import { PcmHandle, requestMicPermission, startPcmStream } from '../services/pcmRecorder';
+import { generateLocalSpec, makeSegment } from '../services/localTranscript';
+import { startDemoTranscript, DemoHandle } from '../services/demoEngine';
+import { requestMicPermission } from '../services/permissions';
+import { isSpeechAvailable, SpeechHandle, startListening } from '../services/speechRecognizer';
 
 const USER_ID = 'demo-user';
 
-type Mode = 'demo' | 'live';
+type Mode = 'device' | 'canned';
 
 /**
- * Unified recorder.
- *  - Live mode (a server URL is configured): streams real microphone PCM over a
- *    WebSocket to the server, which proxies to Deepgram for live word-by-word
- *    transcription, then Claude generates the spec on stop.
- *  - Demo mode (no server / unreachable / permission denied): streams an
- *    on-device canned transcript and generates the spec locally.
+ * Recorder built around on-device speech recognition (no server, no API key):
+ * it transcribes the user's real speech live, then builds the specification
+ * from those actual words. If a server URL is configured, the final spec is
+ * upgraded by Claude on the server; otherwise it is generated on-device.
+ * Falls back to a canned demo only if speech recognition is unavailable.
  */
 export function useRecorder(onSpecReady: () => void) {
-  const { startRecording: storeStart, stopRecording, upsertSegment, setTranslation, setSpec, setSpecProgress } =
+  const { startRecording: storeStart, stopRecording, upsertSegment, setSpec, setSpecProgress } =
     useAppStore();
 
   const [amplitude, setAmplitude] = useState(0);
-  const [connection, setConnection] = useState<Mode | null>(null);
+  const [connection, setConnection] = useState<'device' | 'live' | null>(null);
 
   const modeRef = useRef<Mode | null>(null);
+  const speechRef = useRef<SpeechHandle | null>(null);
   const demoRef = useRef<DemoHandle | null>(null);
-  const pcmRef = useRef<PcmHandle | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const seqRef = useRef(0);
+  const interimIdRef = useRef<string | null>(null);
+  const ampTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const teardown = useCallback(() => {
+    speechRef.current?.stop().catch(() => undefined);
+    speechRef.current = null;
     demoRef.current?.stop();
     demoRef.current = null;
-    pcmRef.current?.stop();
-    pcmRef.current = null;
-    if (wsRef.current) {
-      try {
-        wsRef.current.close();
-      } catch {
-        /* ignore */
-      }
-      wsRef.current = null;
-    }
+    if (ampTimer.current) clearInterval(ampTimer.current);
+    ampTimer.current = null;
     setAmplitude(0);
   }, []);
 
   useEffect(() => () => teardown(), [teardown]);
 
-  const startDemo = useCallback(() => {
-    modeRef.current = 'demo';
-    setConnection('demo');
+  const startCanned = useCallback(() => {
+    modeRef.current = 'canned';
+    setConnection('device');
     storeStart(`local-${Date.now()}`);
     demoRef.current = startDemoTranscript({ onSegment: upsertSegment, onAmplitude: setAmplitude });
   }, [storeStart, upsertSegment]);
 
-  const onMessage = useCallback(
-    (msg: ServerMessage) => {
-      switch (msg.type) {
-        case WsMessageType.TranscriptPartial:
-        case WsMessageType.TranscriptFinal:
-          upsertSegment(msg.segment);
-          break;
-        case WsMessageType.Translation:
-          setTranslation(msg.segmentId, msg.translation);
-          break;
-        case WsMessageType.SpecProgress:
-          setSpecProgress(msg.progress);
-          break;
-        case WsMessageType.SpecComplete:
-          setSpec(msg.spec);
-          teardown();
-          onSpecReady();
-          break;
-        default:
-          break;
-      }
-    },
-    [upsertSegment, setTranslation, setSpecProgress, setSpec, teardown, onSpecReady],
-  );
-
-  const startLive = useCallback(
-    async (serverUrl: string) => {
-      const api = new ApiClient(serverUrl);
-      const { zeroRetention } = useAppStore.getState().settings;
-      try {
-        const { session } = await api.createSession({ userId: USER_ID, zeroRetention });
-        const granted = await requestMicPermission();
-        if (!granted) {
-          startDemo();
-          return;
-        }
-
-        modeRef.current = 'live';
-        setConnection('live');
-        storeStart(session.id);
-        seqRef.current = 0;
-
-        const ws = new WebSocket(api.wsUrl(session.id, USER_ID));
-        wsRef.current = ws;
-        ws.onmessage = (e) => {
-          try {
-            onMessage(JSON.parse(String(e.data)) as ServerMessage);
-          } catch {
-            /* ignore malformed frame */
-          }
-        };
-        ws.onopen = () => {
-          ws.send(
-            JSON.stringify({ type: WsMessageType.StartSession, sessionId: session.id, sampleRate: 16000 }),
-          );
-          pcmRef.current = startPcmStream((base64) => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(
-                JSON.stringify({
-                  type: WsMessageType.AudioChunk,
-                  sessionId: session.id,
-                  seq: seqRef.current++,
-                  data: base64,
-                }),
-              );
-              // Lightweight reactive pulse for the waveform.
-              setAmplitude(0.35 + Math.random() * 0.6);
-            }
-          });
-        };
-        ws.onerror = () => undefined;
-      } catch {
-        // Server unreachable — degrade gracefully to the on-device demo.
-        startDemo();
-      }
-    },
-    [onMessage, startDemo, storeStart],
-  );
-
-  const start = useCallback(() => {
-    const serverUrl = useAppStore.getState().settings.serverUrl;
-    if (serverUrl) void startLive(serverUrl);
-    else startDemo();
-  }, [startDemo, startLive]);
-
-  const stop = useCallback(() => {
-    const mode = modeRef.current;
-    setSpecProgress(0.1);
-    stopRecording();
-
-    if (mode === 'live' && wsRef.current) {
-      pcmRef.current?.stop();
-      pcmRef.current = null;
-      setAmplitude(0);
-      const sessionId = useAppStore.getState().sessionId;
-      if (wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({ type: WsMessageType.StopSession, sessionId, generateSpec: true }),
-        );
-      }
-      // Safety net: if the server never returns a spec, synthesize one locally.
-      setTimeout(() => {
-        if (useAppStore.getState().spec === null) {
-          const segs = useAppStore.getState().segments;
-          setSpec(generateDemoSpec(sessionId ?? `local-${Date.now()}`, segs));
-          teardown();
-          onSpecReady();
-        }
-      }, 15000);
+  const start = useCallback(async () => {
+    const granted = await requestMicPermission();
+    const available = granted && (await isSpeechAvailable());
+    if (!available) {
+      // No mic / recognizer — fall back to a canned walkthrough.
+      startCanned();
       return;
     }
 
-    // Demo mode: brief progress beat, then generate locally.
-    teardown();
-    setTimeout(() => {
-      const segs = useAppStore.getState().segments;
-      const sessionId = useAppStore.getState().sessionId ?? `local-${Date.now()}`;
-      setSpec(generateDemoSpec(sessionId, segs));
-      onSpecReady();
-    }, 600);
-  }, [onSpecReady, setSpec, setSpecProgress, stopRecording, teardown]);
+    modeRef.current = 'device';
+    setConnection(useAppStore.getState().settings.serverUrl ? 'live' : 'device');
+    storeStart(`local-${Date.now()}`);
+    interimIdRef.current = null;
+
+    // Lightweight reactive waveform while listening.
+    ampTimer.current = setInterval(() => setAmplitude(0.3 + Math.random() * 0.6), 120);
+
+    const locale = useAppStore.getState().settings.sttLanguage || 'he-IL';
+    try {
+      speechRef.current = await startListening(locale, {
+        onPartial: (text) => {
+          if (!interimIdRef.current) interimIdRef.current = `seg-${Date.now()}`;
+          upsertSegment(makeSegment(text, false, interimIdRef.current));
+        },
+        onFinal: (text) => {
+          const id = interimIdRef.current ?? `seg-${Date.now()}`;
+          interimIdRef.current = null;
+          upsertSegment(makeSegment(text, true, id));
+        },
+      });
+    } catch {
+      teardown();
+      startCanned();
+    }
+  }, [startCanned, storeStart, teardown, upsertSegment]);
+
+  const finishLocal = useCallback(() => {
+    const segs = useAppStore.getState().segments;
+    const sessionId = useAppStore.getState().sessionId ?? `local-${Date.now()}`;
+    setSpec(generateLocalSpec(sessionId, segs));
+    onSpecReady();
+  }, [onSpecReady, setSpec]);
+
+  const stop = useCallback(async () => {
+    setSpecProgress(0.15);
+    stopRecording();
+    await speechRef.current?.stop().catch(() => undefined);
+    speechRef.current = null;
+    demoRef.current?.stop();
+    demoRef.current = null;
+    if (ampTimer.current) clearInterval(ampTimer.current);
+    ampTimer.current = null;
+    setAmplitude(0);
+
+    const serverUrl = useAppStore.getState().settings.serverUrl;
+    const segs = useAppStore.getState().segments.filter((s) => !s.isFiltered && s.text.trim());
+
+    // With a server, upgrade the spec with Claude using the captured transcript.
+    if (serverUrl && segs.length > 0) {
+      setSpecProgress(0.5);
+      try {
+        const res = await new ApiClient(serverUrl).specFromText(
+          USER_ID,
+          segs.map((s) => s.text),
+        );
+        setSpec(res.spec);
+        onSpecReady();
+        return;
+      } catch {
+        /* fall back to the on-device spec */
+      }
+    }
+
+    setTimeout(finishLocal, 400);
+  }, [finishLocal, onSpecReady, setSpec, setSpecProgress, stopRecording]);
 
   return { amplitude, connection, start, stop };
 }

@@ -65,10 +65,8 @@ export function RecordingScreen({ navigation }: Props): React.JSX.Element {
           {recordingState === RecordingState.Generating
             ? 'Synthesizing your specification…'
             : isRecording
-              ? 'Tap to stop and generate the spec'
-              : connection === null
-                ? 'On-device demo · configure a server in Settings'
-                : 'Ready'}
+              ? 'Listening — speak naturally, then tap to generate'
+              : 'Tap to record — your speech is transcribed on-device'}
         </Text>
       </View>
     </SafeAreaView>

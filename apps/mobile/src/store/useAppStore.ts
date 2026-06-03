@@ -14,8 +14,10 @@ export interface AppState {
   specProgress: number;
   settings: {
     zeroRetention: boolean;
-    /** Base URL of a running Voice2Spec server; empty = on-device demo mode. */
+    /** Base URL of a running Voice2Spec server; empty = on-device only. */
     serverUrl: string;
+    /** Locale for on-device speech recognition, e.g. "he-IL" or "en-US". */
+    sttLanguage: string;
   };
 
   // Actions
@@ -28,6 +30,7 @@ export interface AppState {
   setSpec: (spec: SpecDocument) => void;
   toggleZeroRetention: () => void;
   setServerUrl: (url: string) => void;
+  setSttLanguage: (locale: string) => void;
 }
 
 const initialState = {
@@ -36,7 +39,7 @@ const initialState = {
   segments: [] as TranscriptSegment[],
   spec: null as SpecDocument | null,
   specProgress: 0,
-  settings: { zeroRetention: false, serverUrl: '' },
+  settings: { zeroRetention: false, serverUrl: '', sttLanguage: 'he-IL' },
 };
 
 export const useAppStore = create<AppState>((set) => ({
@@ -80,4 +83,7 @@ export const useAppStore = create<AppState>((set) => ({
 
   setServerUrl: (url) =>
     set((state) => ({ settings: { ...state.settings, serverUrl: url.trim() } })),
+
+  setSttLanguage: (locale) =>
+    set((state) => ({ settings: { ...state.settings, sttLanguage: locale } })),
 }));

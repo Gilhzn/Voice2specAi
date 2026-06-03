@@ -26,9 +26,14 @@ type TestState =
  * through the real backend; otherwise the app runs the on-device demo.
  */
 export function SettingsScreen(): React.JSX.Element {
-  const { settings, toggleZeroRetention, setServerUrl } = useAppStore();
+  const { settings, toggleZeroRetention, setServerUrl, setSttLanguage } = useAppStore();
   const [url, setUrl] = useState(settings.serverUrl);
   const [test, setTest] = useState<TestState>({ kind: 'idle' });
+
+  const LANGS: { code: string; label: string }[] = [
+    { code: 'he-IL', label: 'עברית' },
+    { code: 'en-US', label: 'English' },
+  ];
 
   const save = (value: string) => {
     setUrl(value);
@@ -112,6 +117,32 @@ export function SettingsScreen(): React.JSX.Element {
                     : test.detail}
               </Text>
             </View>
+          </View>
+        </View>
+
+        {/* Speech */}
+        <Text style={styles.sectionLabel}>SPEECH RECOGNITION</Text>
+        <View style={styles.card}>
+          <Text style={styles.label}>Spoken language</Text>
+          <Text style={styles.hint}>
+            On-device transcription runs in this language. Pick the language you’ll mostly speak.
+          </Text>
+          <View style={styles.segment}>
+            {LANGS.map((l) => {
+              const active = settings.sttLanguage === l.code;
+              return (
+                <Pressable
+                  key={l.code}
+                  onPress={() => setSttLanguage(l.code)}
+                  style={[styles.segmentItem, active && styles.segmentItemActive]}
+                  testID={`lang-${l.code}`}
+                >
+                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+                    {l.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
 
@@ -207,6 +238,24 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
   rowLabel: { flex: 1, gap: spacing.xs },
   divider: { height: 1, backgroundColor: colors.border },
+  segment: {
+    flexDirection: 'row',
+    backgroundColor: colors.background,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    padding: 3,
+    marginTop: spacing.xs,
+  },
+  segmentItem: {
+    flex: 1,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.sm,
+    alignItems: 'center',
+  },
+  segmentItemActive: { backgroundColor: colors.accent },
+  segmentText: { ...typography.body, color: colors.textSecondary },
+  segmentTextActive: { color: colors.background, fontWeight: '700' },
   aboutRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: spacing.xs },
   aboutKey: { ...typography.body, color: colors.textSecondary },
   aboutVal: { ...typography.body, color: colors.textPrimary, flexShrink: 1, textAlign: 'right' },

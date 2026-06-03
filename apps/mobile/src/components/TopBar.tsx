@@ -13,7 +13,7 @@ interface TopBarProps {
   /** Elapsed recording time in seconds. */
   elapsed: number;
   /** Active connection mode, shown as a small tag. */
-  connection: 'demo' | 'live' | null;
+  connection: 'device' | 'live' | null;
   onSettings: () => void;
 }
 
@@ -46,7 +46,11 @@ export function TopBar({ recording, elapsed, connection, onSettings }: TopBarPro
         <View>
           <Text style={styles.title}>Voice2Spec</Text>
           <Text style={styles.subtitle}>
-            {connection === 'live' ? 'Connected to server' : 'AI spec generator'}
+            {connection === 'live'
+              ? 'Server + Claude'
+              : connection === 'device'
+                ? 'On-device speech'
+                : 'AI spec generator'}
           </Text>
         </View>
       </View>
