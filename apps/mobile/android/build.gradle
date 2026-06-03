@@ -25,14 +25,16 @@ apply plugin: "com.facebook.react.rootproject"
 // deprecated `package` attribute in their AndroidManifest. Inject a namespace
 // for any such module so the project builds on AGP 8.
 subprojects { subproject ->
-    afterEvaluate {
-        def androidExt = subproject.extensions.findByName("android")
-        if (androidExt != null && androidExt.namespace == null) {
-            def manifestFile = subproject.file("src/main/AndroidManifest.xml")
-            if (manifestFile.exists()) {
-                def pkg = new groovy.xml.XmlSlurper().parse(manifestFile).@package.text()
-                if (pkg != null && !pkg.isEmpty()) {
-                    androidExt.namespace = pkg
+    subproject.plugins.withId("com.android.library") {
+        subproject.afterEvaluate {
+            def androidExt = subproject.extensions.findByName("android")
+            if (androidExt != null && androidExt.namespace == null) {
+                def manifestFile = subproject.file("src/main/AndroidManifest.xml")
+                if (manifestFile.exists()) {
+                    def pkg = new groovy.xml.XmlSlurper().parse(manifestFile).@package.text()
+                    if (pkg != null && !pkg.isEmpty()) {
+                        androidExt.namespace = pkg
+                    }
                 }
             }
         }
